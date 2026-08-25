@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "crbelaus.twingate",
   "name": "Twingate",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "crbelaus",
   "description": "Twingate VPN connection status and toggle",
   "kinds": [
