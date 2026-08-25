@@ -6,12 +6,8 @@ the Omarchy bar, and lets you connect or disconnect with a click.
 ## Install
 
 ```bash
-omarchy plugin add <repo-url> --enable
+omarchy plugin add https://github.com/crbelaus/omarchy-twingate --enable
 ```
-
-(Replace `<repo-url>` once this plugin has a published repository. Until
-then, copy this directory into `~/.config/omarchy/plugins/crbelaus.twingate`
-and enable it from the Omarchy plugin manager.)
 
 Requires the [Twingate Linux client](https://www.twingate.com/download) to be
 installed (`twingate` CLI + `twingate.service`).
