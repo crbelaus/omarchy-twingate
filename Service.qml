@@ -2,14 +2,8 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 
-// Polls `twingate status` and drives the connection via `systemctl start/stop
-// twingate` (the `twingate` CLI's own start/stop subcommands depend on a
-// `twingate-classic` helper binary that's missing from some packagings, e.g.
-// the AUR `twingate-bin` package, so this talks to systemd directly).
-// Authorizes the required sudoers rule itself via pkexec on first use; see
-// README.md for details. Kept separate from
-// BarWidget.qml so a future panel (resources, account switching, ...) can
-// sit on top of the same state without touching the bar icon.
+// Polls `twingate status` and drives the connection via `twingate connect`/
+// `twingate disconnect`.
 Item {
   id: root
 
@@ -28,16 +22,8 @@ Item {
   property string actionStatus: ""
   property string lastError: ""
 
-  // Set once a start/stop fails with a sudo permission error, so the next
-  // click authorizes via pkexec instead of retrying the same failing sudo
-  // call. _pendingDesired remembers which action (1 = start, 0 = stop) to
-  // retry once authorization succeeds.
-  property bool needsSudoSetup: false
-  property int _pendingDesired: -1
-
-  readonly property string userName: Quickshell.env("USER") || Quickshell.env("LOGNAME")
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 300)
-  readonly property bool busy: whichProcess.running || statusProcess.running || actionProcess.running || authProcess.running
+  readonly property bool busy: whichProcess.running || statusProcess.running || actionProcess.running
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -55,12 +41,6 @@ Item {
   function elideStatus(text) {
     var value = String(text || "").replace(/\s+/g, " ").trim()
     return value.length > 140 ? value.substring(0, 137) + "…" : value
-  }
-
-  function isSudoPermissionError(text) {
-    var t = String(text || "")
-    return /password is required/i.test(t) || /terminal is required/i.test(t)
-      || /no tty present/i.test(t) || /^sudo:/im.test(t)
   }
 
   function refresh() {
@@ -101,17 +81,15 @@ Item {
   }
 
   function start() {
-    if (!installed || actionProcess.running || authProcess.running) return
-    if (needsSudoSetup) { _pendingDesired = 1; authorizeSudoAccess(); return }
+    if (!installed || actionProcess.running) return
     _desired = 1
-    runAction(["sudo", "-n", "/usr/bin/systemctl", "start", "twingate"], "Connecting…")
+    runAction(["twingate", "connect"], "Connecting…")
   }
 
   function stop() {
-    if (!installed || actionProcess.running || authProcess.running) return
-    if (needsSudoSetup) { _pendingDesired = 0; authorizeSudoAccess(); return }
+    if (!installed || actionProcess.running) return
     _desired = 0
-    runAction(["sudo", "-n", "/usr/bin/systemctl", "stop", "twingate"], "Disconnecting…")
+    runAction(["twingate", "disconnect"], "Disconnecting…")
   }
 
   function runAction(command, label) {
@@ -119,26 +97,6 @@ Item {
     actionStatus = label || ""
     actionProcess.command = command
     actionProcess.running = true
-  }
-
-  // One-time privileged setup, mirrored from Omarchy's own Tailscale plugin
-  // (its Service.qml authorizes the Tailscale operator via a bare `pkexec
-  // tailscale set --operator=...`). Here pkexec runs a small root shell
-  // script instead, since installing a sudoers file needs more than one
-  // command; userName is passed as a positional argument ($1) rather than
-  // interpolated into the script text, so it can't be used for injection.
-  function authorizeSudoAccess() {
-    if (!installed || authProcess.running || userName === "") return
-    lastError = ""
-    actionStatus = "Authorizing sudo access…"
-    var script = "set -e\n" +
-      "file=/etc/sudoers.d/twingate\n" +
-      "printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl start twingate, /usr/bin/systemctl stop twingate\\n' \"$1\" > \"$file\"\n" +
-      "chown root:root \"$file\"\n" +
-      "chmod 0440 \"$file\"\n" +
-      "visudo -c -f \"$file\" || { rm -f \"$file\"; exit 1; }\n"
-    authProcess.command = ["pkexec", "sh", "-c", script, "sh", userName]
-    authProcess.running = true
   }
 
   Timer {
@@ -208,16 +166,8 @@ Item {
     stderr: StdioCollector { id: actionStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        var errText = actionStderr.text || actionStdout.text || ""
-        if (root.isSudoPermissionError(errText)) {
-          root.needsSudoSetup = true
-          root._pendingDesired = root._desired
-          root._desired = -1
-          root.lastError = "Twingate needs sudo access — click to authorize"
-        } else {
-          root._desired = -1
-          root.lastError = root.elideStatus(errText || "Twingate command failed")
-        }
+        root._desired = -1
+        root.lastError = root.elideStatus(actionStderr.text || actionStdout.text || "Twingate command failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       } else {
@@ -225,30 +175,6 @@ Item {
         root.actionStatus = ""
       }
       delayedRefresh.restart()
-    }
-  }
-
-  Process {
-    id: authProcess
-    running: false
-    command: []
-    stdout: StdioCollector { id: authStdout; waitForEnd: true }
-    stderr: StdioCollector { id: authStderr; waitForEnd: true }
-    onExited: function(exitCode) {
-      if (exitCode !== 0) {
-        root.lastError = root.elideStatus(authStderr.text || authStdout.text || "Sudo authorization failed")
-        root.actionStatus = root.lastError
-        actionStatusTimer.restart()
-        return
-      }
-      root.needsSudoSetup = false
-      root.lastError = ""
-      root.actionStatus = "Sudo access authorized"
-      actionStatusTimer.restart()
-      var pending = root._pendingDesired
-      root._pendingDesired = -1
-      if (pending === 1) root.start()
-      else if (pending === 0) root.stop()
     }
   }
 }
