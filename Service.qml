@@ -83,13 +83,13 @@ Item {
   function start() {
     if (!installed || actionProcess.running) return
     _desired = 1
-    runAction(["twingate", "connect"], "Connecting…")
+    runAction(["pkexec", "twingate", "connect"], "Connecting…")
   }
 
   function stop() {
     if (!installed || actionProcess.running) return
     _desired = 0
-    runAction(["twingate", "disconnect"], "Disconnecting…")
+    runAction(["pkexec", "twingate", "disconnect"], "Disconnecting…")
   }
 
   function runAction(command, label) {
