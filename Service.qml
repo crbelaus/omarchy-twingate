@@ -35,11 +35,24 @@ Item {
   property string _statusOutput: ""
   property string _resourcesOutput: ""
   property string _accountsOutput: ""
+  property string _actionOutput: ""
+  property string _actionError: ""
   property string _loginOutput: ""
   property string _loginError: ""
   property bool _loginUrlOpened: false
   property string _logoutOutput: ""
   property string _logoutError: ""
+
+  // Upper bound on any single command's accumulated output. A compromised or
+  // malfunctioning `twingate` binary could otherwise stream unbounded stdout/
+  // stderr into memory before elideStatus() ever gets a chance to truncate it.
+  readonly property int _maxOutputChars: 65536
+
+  function appendBounded(current, chunk) {
+    if (current.length >= root._maxOutputChars) return current
+    var next = current + chunk
+    return next.length > root._maxOutputChars ? next.substring(0, root._maxOutputChars) : next
+  }
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -134,6 +147,8 @@ Item {
   function runAction(command, label) {
     lastError = ""
     actionStatus = label || ""
+    _actionOutput = ""
+    _actionError = ""
     actionProcess.command = command
     actionProcess.running = true
   }
@@ -177,9 +192,12 @@ Item {
 
   function handleLoginOutput(data, isError) {
     var text = String(data || "")
-    if (isError) _loginError += text + "\n"
-    else _loginOutput += text + "\n"
+    if (isError) _loginError = appendBounded(_loginError, text + "\n")
+    else _loginOutput = appendBounded(_loginOutput, text + "\n")
     openAuthUrlFrom(text)
+    if (_loginOutput.length >= _maxOutputChars || _loginError.length >= _maxOutputChars) {
+      loginProcess.running = false
+    }
   }
 
   Timer {
@@ -238,10 +256,14 @@ Item {
     id: statusProcess
     running: false
     command: []
-    stdout: StdioCollector { id: statusStdout; waitForEnd: true; onStreamFinished: root._statusOutput = text }
-    stderr: StdioCollector { id: statusStderr; waitForEnd: true }
+    stdout: SplitParser {
+      onRead: function(line) {
+        root._statusOutput = root.appendBounded(root._statusOutput, line + "\n")
+        if (root._statusOutput.length >= root._maxOutputChars) statusProcess.running = false
+      }
+    }
     onExited: function(exitCode) {
-      root.parseStatus(statusStdout.text || root._statusOutput, exitCode)
+      root.parseStatus(root._statusOutput, exitCode)
     }
   }
 
@@ -249,10 +271,14 @@ Item {
     id: resourcesProcess
     running: false
     command: []
-    stdout: StdioCollector { id: resourcesStdout; waitForEnd: true; onStreamFinished: root._resourcesOutput = text }
-    stderr: StdioCollector { id: resourcesStderr; waitForEnd: true }
+    stdout: SplitParser {
+      onRead: function(line) {
+        root._resourcesOutput = root.appendBounded(root._resourcesOutput, line + "\n")
+        if (root._resourcesOutput.length >= root._maxOutputChars) resourcesProcess.running = false
+      }
+    }
     onExited: function(exitCode) {
-      var parsed = Model.parseResources(resourcesStdout.text || root._resourcesOutput)
+      var parsed = Model.parseResources(root._resourcesOutput)
       root.resources = parsed.resources
       root.hiddenResourceCount = parsed.hiddenCount
     }
@@ -262,10 +288,14 @@ Item {
     id: accountsProcess
     running: false
     command: []
-    stdout: StdioCollector { id: accountsStdout; waitForEnd: true; onStreamFinished: root._accountsOutput = text }
-    stderr: StdioCollector { id: accountsStderr; waitForEnd: true }
+    stdout: SplitParser {
+      onRead: function(line) {
+        root._accountsOutput = root.appendBounded(root._accountsOutput, line + "\n")
+        if (root._accountsOutput.length >= root._maxOutputChars) accountsProcess.running = false
+      }
+    }
     onExited: function(exitCode) {
-      root.accounts = Model.parseAccounts(accountsStdout.text || root._accountsOutput)
+      root.accounts = Model.parseAccounts(root._accountsOutput)
     }
   }
 
@@ -273,18 +303,30 @@ Item {
     id: actionProcess
     running: false
     command: []
-    stdout: StdioCollector { id: actionStdout; waitForEnd: true }
-    stderr: StdioCollector { id: actionStderr; waitForEnd: true }
+    stdout: SplitParser {
+      onRead: function(line) {
+        root._actionOutput = root.appendBounded(root._actionOutput, line + "\n")
+        if (root._actionOutput.length >= root._maxOutputChars) actionProcess.running = false
+      }
+    }
+    stderr: SplitParser {
+      onRead: function(line) {
+        root._actionError = root.appendBounded(root._actionError, line + "\n")
+        if (root._actionError.length >= root._maxOutputChars) actionProcess.running = false
+      }
+    }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
         root._desired = -1
-        root.lastError = root.elideStatus(actionStderr.text || actionStdout.text || "Twingate command failed")
+        root.lastError = root.elideStatus(root._actionError || root._actionOutput || "Twingate command failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       } else {
         root.lastError = ""
         root.actionStatus = ""
       }
+      root._actionOutput = ""
+      root._actionError = ""
       delayedRefresh.restart()
     }
   }
@@ -325,12 +367,22 @@ Item {
     running: false
     command: []
     stdinEnabled: true
-    stdout: StdioCollector { id: logoutStdout; waitForEnd: true }
-    stderr: StdioCollector { id: logoutStderr; waitForEnd: true }
+    stdout: SplitParser {
+      onRead: function(line) {
+        root._logoutOutput = root.appendBounded(root._logoutOutput, line + "\n")
+        if (root._logoutOutput.length >= root._maxOutputChars) logoutProcess.running = false
+      }
+    }
+    stderr: SplitParser {
+      onRead: function(line) {
+        root._logoutError = root.appendBounded(root._logoutError, line + "\n")
+        if (root._logoutError.length >= root._maxOutputChars) logoutProcess.running = false
+      }
+    }
     onStarted: write("y\n")
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        root.lastError = root.elideStatus(logoutStderr.text || logoutStdout.text || "Twingate logout failed")
+        root.lastError = root.elideStatus(root._logoutError || root._logoutOutput || "Twingate logout failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       } else {
