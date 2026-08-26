@@ -2,18 +2,18 @@
   "schemaVersion": 1,
   "id": "crbelaus.twingate",
   "name": "Twingate",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "author": "crbelaus",
-  "description": "Twingate VPN connection status and toggle",
+  "description": "Twingate VPN status, connection toggle, resources, and account login/logout",
   "kinds": [
     "bar-widget"
   ],
   "entryPoints": {
-    "barWidget": "BarWidget.qml"
+    "barWidget": "Panel.qml"
   },
   "barWidget": {
     "displayName": "Twingate",
-    "description": "Twingate VPN connection status, click to connect/disconnect",
+    "description": "Connect/disconnect Twingate, browse authorized resources, and log in or out of your account",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",

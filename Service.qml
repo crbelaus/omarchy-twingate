@@ -1,9 +1,11 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import qs.Commons
+import "Model.js" as Model
 
-// Polls `twingate status` and drives the connection via `twingate connect`/
-// `twingate disconnect`.
+// Polls `twingate status`, `twingate resources`, and `twingate account list`,
+// and drives connection, login, and logout via the `twingate` CLI.
 Item {
   id: root
 
@@ -19,11 +21,25 @@ Item {
   readonly property bool active: _desired === -1 ? running : (_desired === 1)
 
   property string statusText: "Checking…"
+  property var resources: []
+  property int hiddenResourceCount: 0
+  property var accounts: []
   property string actionStatus: ""
   property string lastError: ""
+  property string loggingOutEmail: ""
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 300)
-  readonly property bool busy: whichProcess.running || statusProcess.running || actionProcess.running
+  readonly property bool busy: whichProcess.running || statusProcess.running || resourcesProcess.running
+    || accountsProcess.running || actionProcess.running || loginProcess.running || logoutProcess.running
+
+  property string _statusOutput: ""
+  property string _resourcesOutput: ""
+  property string _accountsOutput: ""
+  property string _loginOutput: ""
+  property string _loginError: ""
+  property bool _loginUrlOpened: false
+  property string _logoutOutput: ""
+  property string _logoutError: ""
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -43,9 +59,15 @@ Item {
     return value.length > 140 ? value.substring(0, 137) + "…" : value
   }
 
+  function copyToClipboard(value) {
+    var text = String(value || "")
+    if (text === "") return
+    Util.execDetached("printf %s " + Util.shellQuote(text) + " | wl-copy")
+  }
+
   function refresh() {
     if (installed) {
-      refreshStatus()
+      refreshStatusAndAccounts()
       return
     }
     if (!whichProcess.running) {
@@ -54,11 +76,28 @@ Item {
     }
   }
 
-  function refreshStatus() {
-    if (!installed || statusProcess.running) return
-    statusProcess.command = ["twingate", "status"]
-    statusProcess.running = true
-    if (!pollWatchdog.running) pollWatchdog.start()
+  function refreshStatusAndAccounts() {
+    if (!installed) return
+    var launched = false
+    if (!statusProcess.running) {
+      _statusOutput = ""
+      statusProcess.command = ["twingate", "status"]
+      statusProcess.running = true
+      launched = true
+    }
+    if (!resourcesProcess.running) {
+      _resourcesOutput = ""
+      resourcesProcess.command = ["twingate", "resources"]
+      resourcesProcess.running = true
+      launched = true
+    }
+    if (!accountsProcess.running) {
+      _accountsOutput = ""
+      accountsProcess.command = ["twingate", "account", "list"]
+      accountsProcess.running = true
+      launched = true
+    }
+    if (launched && !pollWatchdog.running) pollWatchdog.start()
   }
 
   function parseStatus(raw, exitCode) {
@@ -99,6 +138,50 @@ Item {
     actionProcess.running = true
   }
 
+  function login(network) {
+    var name = String(network || "").trim()
+    if (!installed || name === "" || loginProcess.running) return
+    _loginOutput = ""
+    _loginError = ""
+    _loginUrlOpened = false
+    lastError = ""
+    actionStatus = "Starting Twingate login…"
+    loginProcess.networkName = name
+    loginProcess.command = ["twingate", "account", "add"]
+    loginProcess.running = true
+  }
+
+  function logout(email) {
+    var id = String(email || "").trim()
+    if (!installed || id === "" || logoutProcess.running) return
+    _logoutOutput = ""
+    _logoutError = ""
+    lastError = ""
+    loggingOutEmail = id
+    logoutProcess.command = ["twingate", "account", "logout", id]
+    logoutProcess.running = true
+  }
+
+  function openAuthUrlFrom(text) {
+    if (_loginUrlOpened) return true
+    var match = String(text || "").match(/https?:\/\/\S+/)
+    if (match && match[0]) {
+      _loginUrlOpened = true
+      Qt.openUrlExternally(match[0])
+      actionStatus = "Opened Twingate login"
+      actionStatusTimer.restart()
+      return true
+    }
+    return false
+  }
+
+  function handleLoginOutput(data, isError) {
+    var text = String(data || "")
+    if (isError) _loginError += text + "\n"
+    else _loginOutput += text + "\n"
+    openAuthUrlFrom(text)
+  }
+
   Timer {
     id: refreshTimer
     interval: root.refreshIntervalSec * 1000
@@ -116,14 +199,18 @@ Item {
   }
 
   Timer {
-    // A status process that never exits (the twingated socket can hang while
-    // the network is coming and going) would otherwise leave the icon stale
-    // forever. Reap it well inside the refresh interval so the next tick
-    // starts clean.
+    // A status/resources/accounts process that never exits (the twingated
+    // socket can hang while the network is coming and going) would otherwise
+    // leave the panel stale forever. Reap anything still running well inside
+    // the refresh interval so the next tick starts clean.
     id: pollWatchdog
     interval: 10000
     repeat: false
-    onTriggered: { if (statusProcess.running) statusProcess.running = false }
+    onTriggered: {
+      if (statusProcess.running) statusProcess.running = false
+      if (resourcesProcess.running) resourcesProcess.running = false
+      if (accountsProcess.running) accountsProcess.running = false
+    }
   }
 
   Timer {
@@ -139,7 +226,7 @@ Item {
     command: []
     onExited: function(exitCode) {
       root.installed = exitCode === 0
-      if (root.installed) root.refreshStatus()
+      if (root.installed) root.refreshStatusAndAccounts()
       else {
         root.running = false
         root.statusText = "Not installed"
@@ -151,10 +238,34 @@ Item {
     id: statusProcess
     running: false
     command: []
-    stdout: StdioCollector { id: statusStdout; waitForEnd: true }
+    stdout: StdioCollector { id: statusStdout; waitForEnd: true; onStreamFinished: root._statusOutput = text }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      root.parseStatus(statusStdout.text, exitCode)
+      root.parseStatus(statusStdout.text || root._statusOutput, exitCode)
+    }
+  }
+
+  Process {
+    id: resourcesProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: resourcesStdout; waitForEnd: true; onStreamFinished: root._resourcesOutput = text }
+    stderr: StdioCollector { id: resourcesStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var parsed = Model.parseResources(resourcesStdout.text || root._resourcesOutput)
+      root.resources = parsed.resources
+      root.hiddenResourceCount = parsed.hiddenCount
+    }
+  }
+
+  Process {
+    id: accountsProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: accountsStdout; waitForEnd: true; onStreamFinished: root._accountsOutput = text }
+    stderr: StdioCollector { id: accountsStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.accounts = Model.parseAccounts(accountsStdout.text || root._accountsOutput)
     }
   }
 
@@ -174,6 +285,59 @@ Item {
         root.lastError = ""
         root.actionStatus = ""
       }
+      delayedRefresh.restart()
+    }
+  }
+
+  // The network name goes over stdin — `twingate account add` has no
+  // non-interactive flag for it.
+  Process {
+    id: loginProcess
+    property string networkName: ""
+    running: false
+    command: []
+    stdinEnabled: true
+    stdout: SplitParser { onRead: function(data) { root.handleLoginOutput(data, false) } }
+    stderr: SplitParser { onRead: function(data) { root.handleLoginOutput(data, true) } }
+    onStarted: {
+      write(networkName + "\n")
+      networkName = ""
+    }
+    onExited: function(exitCode) {
+      var combined = String(root._loginOutput || "") + "\n" + String(root._loginError || "")
+      var opened = root.openAuthUrlFrom(combined)
+      if (exitCode !== 0 && !opened) {
+        root.lastError = root.elideStatus(combined || "Twingate login failed")
+        root.actionStatus = root.lastError
+        actionStatusTimer.restart()
+      } else if (!opened) {
+        root.lastError = ""
+        root.actionStatus = ""
+      }
+      delayedRefresh.restart()
+    }
+  }
+
+  // The confirmation prompt goes over stdin — `twingate account logout` has
+  // no non-interactive "yes" flag.
+  Process {
+    id: logoutProcess
+    running: false
+    command: []
+    stdinEnabled: true
+    stdout: StdioCollector { id: logoutStdout; waitForEnd: true }
+    stderr: StdioCollector { id: logoutStderr; waitForEnd: true }
+    onStarted: write("y\n")
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.lastError = root.elideStatus(logoutStderr.text || logoutStdout.text || "Twingate logout failed")
+        root.actionStatus = root.lastError
+        actionStatusTimer.restart()
+      } else {
+        root.lastError = ""
+        root.actionStatus = ""
+      }
+      root.loggingOutEmail = ""
       delayedRefresh.restart()
     }
   }
