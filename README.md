@@ -5,6 +5,8 @@ the Omarchy bar. Click the icon to open a panel with connection status,
 authorized resources, and account login/logout — similar to the built-in
 Tailscale widget.
 
+![Omarchy's Twingate pangel](/docs/screenshot-2026-08-26_20-12-04.png)
+
 ## Install
 
 ```bash
