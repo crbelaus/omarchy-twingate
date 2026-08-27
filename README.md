@@ -69,3 +69,13 @@ requires. Logging in runs `twingate account add` (which opens your browser
 for authentication); logging out runs `twingate account logout` for the
 selected account. None of this reads, stores, or transmits your Twingate
 credentials — all authentication is handled by the Twingate client itself.
+
+Every one of those commands is spawned behind `head -c 65536`, so the shell
+can never read more than 64 KiB back from any single invocation: once the
+limit is hit `head` exits, the pipe closes, and the producer takes `SIGPIPE`.
+The cap is enforced by the kernel pipe before any of the shell's own buffers
+see the data, so a malfunctioning or compromised `twingate` binary cannot
+grow the shell's memory by streaming output at it. Command arguments are
+passed as bash positional parameters (`"$@"`) rather than interpolated into
+a shell string, so values that came out of the CLI — account emails, network
+names — are never re-parsed as shell syntax.

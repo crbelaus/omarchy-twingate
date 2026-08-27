@@ -36,22 +36,44 @@ Item {
   property string _resourcesOutput: ""
   property string _accountsOutput: ""
   property string _actionOutput: ""
-  property string _actionError: ""
   property string _loginOutput: ""
-  property string _loginError: ""
   property bool _loginUrlOpened: false
   property string _logoutOutput: ""
-  property string _logoutError: ""
 
-  // Upper bound on any single command's accumulated output. A compromised or
-  // malfunctioning `twingate` binary could otherwise stream unbounded stdout/
-  // stderr into memory before elideStatus() ever gets a chance to truncate it.
-  readonly property int _maxOutputChars: 65536
+  // Hard ceiling on how much a single command may hand back.
+  readonly property int _maxOutputBytes: 65536
 
+  // Every command runs behind `head -c`, so the ceiling is enforced by the
+  // kernel pipe rather than by us: once the limit is reached head exits, the
+  // read end closes, and the producer takes SIGPIPE. A compromised or
+  // malfunctioning `twingate` binary therefore cannot make the shell buffer
+  // unbounded output anywhere — not in a parser, not in a property.
+  //
+  // The command is passed as bash's positional arguments (`bash -c <script>
+  // <argv0> <argv...>`) and referenced as "$@", so nothing that came out of
+  // the CLI is ever spliced into a shell string.
+  readonly property string _quietRunner:
+    'exec 2>/dev/null; "$@" | head -c ' + _maxOutputBytes + '; exit ${PIPESTATUS[0]}'
+  readonly property string _mergedRunner:
+    '"$@" 2>&1 | head -c ' + _maxOutputBytes + '; exit ${PIPESTATUS[0]}'
+
+  // Bounded, stderr discarded — for commands whose stdout we parse.
+  function boundedQuiet(argv) {
+    return ["bash", "-c", _quietRunner, "twingate-panel"].concat(argv)
+  }
+
+  // Bounded, stderr folded into stdout — for commands whose failure message we
+  // want to show the user.
+  function boundedMerged(argv) {
+    return ["bash", "-c", _mergedRunner, "twingate-panel"].concat(argv)
+  }
+
+  // Second layer of defence: even inside the ceiling, never let a property
+  // grow past it, and stop reading once we are at the limit.
   function appendBounded(current, chunk) {
-    if (current.length >= root._maxOutputChars) return current
+    if (current.length >= root._maxOutputBytes) return current
     var next = current + chunk
-    return next.length > root._maxOutputChars ? next.substring(0, root._maxOutputChars) : next
+    return next.length > root._maxOutputBytes ? next.substring(0, root._maxOutputBytes) : next
   }
 
   function setting(name, fallback) {
@@ -84,7 +106,7 @@ Item {
       return
     }
     if (!whichProcess.running) {
-      whichProcess.command = ["which", "twingate"]
+      whichProcess.command = boundedQuiet(["which", "twingate"])
       whichProcess.running = true
     }
   }
@@ -94,19 +116,19 @@ Item {
     var launched = false
     if (!statusProcess.running) {
       _statusOutput = ""
-      statusProcess.command = ["twingate", "status"]
+      statusProcess.command = boundedQuiet(["twingate", "status"])
       statusProcess.running = true
       launched = true
     }
     if (!resourcesProcess.running) {
       _resourcesOutput = ""
-      resourcesProcess.command = ["twingate", "resources"]
+      resourcesProcess.command = boundedQuiet(["twingate", "resources"])
       resourcesProcess.running = true
       launched = true
     }
     if (!accountsProcess.running) {
       _accountsOutput = ""
-      accountsProcess.command = ["twingate", "account", "list"]
+      accountsProcess.command = boundedQuiet(["twingate", "account", "list"])
       accountsProcess.running = true
       launched = true
     }
@@ -148,8 +170,7 @@ Item {
     lastError = ""
     actionStatus = label || ""
     _actionOutput = ""
-    _actionError = ""
-    actionProcess.command = command
+    actionProcess.command = boundedMerged(command)
     actionProcess.running = true
   }
 
@@ -157,12 +178,11 @@ Item {
     var name = String(network || "").trim()
     if (!installed || name === "" || loginProcess.running) return
     _loginOutput = ""
-    _loginError = ""
     _loginUrlOpened = false
     lastError = ""
     actionStatus = "Starting Twingate login…"
     loginProcess.networkName = name
-    loginProcess.command = ["twingate", "account", "add"]
+    loginProcess.command = boundedMerged(["twingate", "account", "add"])
     loginProcess.running = true
   }
 
@@ -170,10 +190,9 @@ Item {
     var id = String(email || "").trim()
     if (!installed || id === "" || logoutProcess.running) return
     _logoutOutput = ""
-    _logoutError = ""
     lastError = ""
     loggingOutEmail = id
-    logoutProcess.command = ["twingate", "account", "logout", id]
+    logoutProcess.command = boundedMerged(["twingate", "account", "logout", id])
     logoutProcess.running = true
   }
 
@@ -188,16 +207,6 @@ Item {
       return true
     }
     return false
-  }
-
-  function handleLoginOutput(data, isError) {
-    var text = String(data || "")
-    if (isError) _loginError = appendBounded(_loginError, text + "\n")
-    else _loginOutput = appendBounded(_loginOutput, text + "\n")
-    openAuthUrlFrom(text)
-    if (_loginOutput.length >= _maxOutputChars || _loginError.length >= _maxOutputChars) {
-      loginProcess.running = false
-    }
   }
 
   Timer {
@@ -259,7 +268,7 @@ Item {
     stdout: SplitParser {
       onRead: function(line) {
         root._statusOutput = root.appendBounded(root._statusOutput, line + "\n")
-        if (root._statusOutput.length >= root._maxOutputChars) statusProcess.running = false
+        if (root._statusOutput.length >= root._maxOutputBytes) statusProcess.running = false
       }
     }
     onExited: function(exitCode) {
@@ -274,7 +283,7 @@ Item {
     stdout: SplitParser {
       onRead: function(line) {
         root._resourcesOutput = root.appendBounded(root._resourcesOutput, line + "\n")
-        if (root._resourcesOutput.length >= root._maxOutputChars) resourcesProcess.running = false
+        if (root._resourcesOutput.length >= root._maxOutputBytes) resourcesProcess.running = false
       }
     }
     onExited: function(exitCode) {
@@ -291,7 +300,7 @@ Item {
     stdout: SplitParser {
       onRead: function(line) {
         root._accountsOutput = root.appendBounded(root._accountsOutput, line + "\n")
-        if (root._accountsOutput.length >= root._maxOutputChars) accountsProcess.running = false
+        if (root._accountsOutput.length >= root._maxOutputBytes) accountsProcess.running = false
       }
     }
     onExited: function(exitCode) {
@@ -306,19 +315,13 @@ Item {
     stdout: SplitParser {
       onRead: function(line) {
         root._actionOutput = root.appendBounded(root._actionOutput, line + "\n")
-        if (root._actionOutput.length >= root._maxOutputChars) actionProcess.running = false
-      }
-    }
-    stderr: SplitParser {
-      onRead: function(line) {
-        root._actionError = root.appendBounded(root._actionError, line + "\n")
-        if (root._actionError.length >= root._maxOutputChars) actionProcess.running = false
+        if (root._actionOutput.length >= root._maxOutputBytes) actionProcess.running = false
       }
     }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
         root._desired = -1
-        root.lastError = root.elideStatus(root._actionError || root._actionOutput || "Twingate command failed")
+        root.lastError = root.elideStatus(root._actionOutput || "Twingate command failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       } else {
@@ -326,7 +329,6 @@ Item {
         root.actionStatus = ""
       }
       root._actionOutput = ""
-      root._actionError = ""
       delayedRefresh.restart()
     }
   }
@@ -339,17 +341,21 @@ Item {
     running: false
     command: []
     stdinEnabled: true
-    stdout: SplitParser { onRead: function(data) { root.handleLoginOutput(data, false) } }
-    stderr: SplitParser { onRead: function(data) { root.handleLoginOutput(data, true) } }
+    stdout: SplitParser {
+      onRead: function(line) {
+        root._loginOutput = root.appendBounded(root._loginOutput, line + "\n")
+        root.openAuthUrlFrom(line)
+        if (root._loginOutput.length >= root._maxOutputBytes) loginProcess.running = false
+      }
+    }
     onStarted: {
       write(networkName + "\n")
       networkName = ""
     }
     onExited: function(exitCode) {
-      var combined = String(root._loginOutput || "") + "\n" + String(root._loginError || "")
-      var opened = root.openAuthUrlFrom(combined)
+      var opened = root.openAuthUrlFrom(root._loginOutput)
       if (exitCode !== 0 && !opened) {
-        root.lastError = root.elideStatus(combined || "Twingate login failed")
+        root.lastError = root.elideStatus(root._loginOutput || "Twingate login failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       } else if (!opened) {
@@ -370,19 +376,13 @@ Item {
     stdout: SplitParser {
       onRead: function(line) {
         root._logoutOutput = root.appendBounded(root._logoutOutput, line + "\n")
-        if (root._logoutOutput.length >= root._maxOutputChars) logoutProcess.running = false
-      }
-    }
-    stderr: SplitParser {
-      onRead: function(line) {
-        root._logoutError = root.appendBounded(root._logoutError, line + "\n")
-        if (root._logoutError.length >= root._maxOutputChars) logoutProcess.running = false
+        if (root._logoutOutput.length >= root._maxOutputBytes) logoutProcess.running = false
       }
     }
     onStarted: write("y\n")
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        root.lastError = root.elideStatus(root._logoutError || root._logoutOutput || "Twingate logout failed")
+        root.lastError = root.elideStatus(root._logoutOutput || "Twingate logout failed")
         root.actionStatus = root.lastError
         actionStatusTimer.restart()
       } else {
