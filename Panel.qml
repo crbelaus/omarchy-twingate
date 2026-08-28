@@ -312,6 +312,7 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
           }
 
           CursorSurface {
@@ -571,6 +572,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           elide: Text.ElideRight
+          textFormat: Text.PlainText
         }
 
         Text {
@@ -580,6 +582,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
+          textFormat: Text.PlainText
         }
       }
 
@@ -645,6 +648,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           elide: Text.ElideRight
+          textFormat: Text.PlainText
         }
 
         Text {
@@ -654,6 +658,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
+          textFormat: Text.PlainText
         }
       }
 
