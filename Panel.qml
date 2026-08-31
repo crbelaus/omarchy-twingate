@@ -203,6 +203,7 @@ Panel {
           anchors.centerIn: parent
           iconSize: Style.space(11)
           color: root.barIconColor
+          crossed: twingate.installed && !twingate.active
         }
       }
     }
@@ -277,6 +278,7 @@ Panel {
                 TwingateIcon {
                   iconSize: Style.font.display
                   color: root.iconColor
+                  crossed: twingate.installed && !twingate.active
                 }
               }
 
